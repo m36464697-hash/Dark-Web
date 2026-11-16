@@ -1,0 +1,30 @@
+services:
+  # Site 1: Dark Web — Encrypted Member Content Portal
+  - type: web
+    name: dark-web-portal
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VITE_SITE_ROLE
+        value: portal
+
+  # Site 2: Dark Web Admin — Dedicated Command & Control Panel
+  - type: web
+    name: dark-web-admin
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VITE_SITE_ROLE
+        value: admin

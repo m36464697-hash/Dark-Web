@@ -1,0 +1,454 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner() {
+      return isEmailVerified() && request.auth.token.email == 'm36464697@gmail.com';
+    }
+
+    function adminDoc() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
+    }
+
+    function isActiveAdmin() {
+      return isEmailVerified()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && adminDoc().active == true;
+    }
+
+    function hasAdminPermission(perm) {
+      return isOwner() || (
+        isActiveAdmin()
+        && adminDoc().permissions is list
+        && adminDoc().permissions.hasAny([perm])
+      );
+    }
+
+    function isActiveVerifiedUser() {
+      return isEmailVerified() && (
+        isOwner() || (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active'
+        )
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'fullName', 'phone', 'email', 'emailVerified',
+          'status', 'clearanceLevel', 'securityFingerprint', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'fullName', 'phone', 'email', 'emailVerified',
+          'status', 'clearanceLevel', 'securityFingerprint', 'notes',
+          'createdAt', 'updatedAt', 'lastLoginAt'
+        ])
+        && isValidId(data.uid)
+        && data.fullName is string && data.fullName.size() >= 3 && data.fullName.size() <= 120
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && data.emailVerified is bool
+        && data.status in ['active', 'suspended', 'banned']
+        && data.clearanceLevel in ['standard', 'elevated', 'restricted']
+        && data.securityFingerprint is string && data.securityFingerprint.size() >= 8 && data.securityFingerprint.size() <= 128
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (!('lastLoginAt' in data) || data.lastLoginAt is timestamp);
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll([
+          'uid', 'fullName', 'email', 'role', 'permissions',
+          'active', 'addedBy', 'addedByEmail', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'fullName', 'email', 'phone', 'role', 'permissions',
+          'active', 'addedBy', 'addedByEmail', 'inviteId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
+        && data.role in ['owner', 'admin']
+        && data.permissions is list
+        && data.permissions.size() <= 10
+        && data.permissions.hasOnly([
+          'manage_content', 'manage_users', 'manage_admins',
+          'view_logs', 'view_alerts', 'system_settings'
+        ])
+        && data.active is bool
+        && data.addedBy is string && data.addedBy.size() >= 1 && data.addedBy.size() <= 128
+        && data.addedByEmail is string && data.addedByEmail.size() >= 5 && data.addedByEmail.size() <= 160
+        && (!('inviteId' in data) || isValidId(data.inviteId))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminInvite(data) {
+      return data.keys().hasAll([
+          'id', 'email', 'fullName', 'permissions',
+          'active', 'invitedBy', 'invitedByEmail', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'email', 'fullName', 'phone', 'permissions',
+          'active', 'invitedBy', 'invitedByEmail', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
+        && data.permissions is list
+        && data.permissions.size() <= 10
+        && data.permissions.hasOnly([
+          'manage_content', 'manage_users', 'manage_admins',
+          'view_logs', 'view_alerts', 'system_settings'
+        ])
+        && data.active is bool
+        && data.invitedBy is string && data.invitedBy.size() >= 1 && data.invitedBy.size() <= 128
+        && data.invitedByEmail is string && data.invitedByEmail.size() >= 5 && data.invitedByEmail.size() <= 160
+        && data.createdAt is timestamp;
+    }
+
+    function isValidVaultContent(data) {
+      return data.keys().hasAll([
+          'id', 'type', 'title', 'classification', 'isEncrypted',
+          'integrityHash', 'visibility', 'authorId', 'authorName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'type', 'title', 'summary', 'body', 'mediaUrl', 'price',
+          'classification', 'isEncrypted', 'encryptionIv', 'encryptionSalt',
+          'integrityHash', 'visibility', 'authorId', 'authorName', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.type in ['video', 'image', 'message', 'product']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && (!('summary' in data) || (data.summary is string && data.summary.size() <= 600))
+        && (!('body' in data) || (data.body is string && data.body.size() <= 20000))
+        && (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 2000))
+        && (!('price' in data) || (data.price is string && data.price.size() <= 64))
+        && data.classification in ['standard', 'confidential', 'encrypted']
+        && data.isEncrypted is bool
+        && (!('encryptionIv' in data) || (data.encryptionIv is string && data.encryptionIv.size() <= 128))
+        && (!('encryptionSalt' in data) || (data.encryptionSalt is string && data.encryptionSalt.size() <= 128))
+        && data.integrityHash is string && data.integrityHash.size() >= 16 && data.integrityHash.size() <= 128
+        && data.visibility in ['published', 'hidden']
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll([
+          'actorId', 'actorName', 'actorEmail', 'actorRole',
+          'actionType', 'targetType', 'details', 'severity', 'checksum', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'actorId', 'actorName', 'actorEmail', 'actorRole',
+          'actionType', 'targetType', 'targetId', 'details', 'severity', 'checksum', 'createdAt'
+        ])
+        && isValidId(data.actorId)
+        && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120
+        && data.actorEmail is string && data.actorEmail.size() >= 5 && data.actorEmail.size() <= 160
+        && data.actorRole in ['owner', 'admin']
+        && data.actionType is string && data.actionType.size() >= 2 && data.actionType.size() <= 80
+        && data.targetType in ['user', 'admin', 'content', 'system', 'security']
+        && (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128))
+        && data.details is string && data.details.size() >= 2 && data.details.size() <= 1000
+        && data.severity in ['info', 'warning', 'critical']
+        && data.checksum is string && data.checksum.size() >= 16 && data.checksum.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSecurityAlert(data) {
+      return data.keys().hasAll([
+          'title', 'message', 'category', 'severity',
+          'actorId', 'actorEmail', 'acknowledged', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'title', 'message', 'category', 'severity',
+          'actorId', 'actorEmail', 'acknowledged', 'acknowledgedBy', 'acknowledgedAt', 'createdAt'
+        ])
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 160
+        && data.message is string && data.message.size() >= 2 && data.message.size() <= 800
+        && data.category in ['admin_change', 'user_restriction', 'content_removal', 'policy_update', 'auth_event']
+        && data.severity in ['high', 'critical']
+        && isValidId(data.actorId)
+        && data.actorEmail is string && data.actorEmail.size() >= 5 && data.actorEmail.size() <= 160
+        && data.acknowledged is bool
+        && (!('acknowledgedBy' in data) || (data.acknowledgedBy is string && data.acknowledgedBy.size() <= 160))
+        && (!('acknowledgedAt' in data) || data.acknowledgedAt is timestamp)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSystemSettings(data) {
+      return data.keys().hasAll([
+          'siteTitle', 'maintenanceMode', 'registrationOpen',
+          'requireEmailVerification', 'encryptionStandard', 'updatedBy', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'siteTitle', 'maintenanceMode', 'registrationOpen',
+          'requireEmailVerification', 'encryptionStandard', 'vaultNotice', 'updatedBy', 'updatedAt'
+        ])
+        && data.siteTitle is string && data.siteTitle.size() >= 2 && data.siteTitle.size() <= 80
+        && data.maintenanceMode is bool
+        && data.registrationOpen is bool
+        && data.requireEmailVerification is bool
+        && data.encryptionStandard == 'AES-256-GCM'
+        && (!('vaultNotice' in data) || (data.vaultNotice is string && data.vaultNotice.size() <= 500))
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 160
+        && data.updatedAt is timestamp;
+    }
+
+    function canClaimAdminInvite(inviteId, adminData) {
+      return isValidId(inviteId)
+        && exists(/databases/$(database)/documents/admin_invites/$(inviteId))
+        && get(/databases/$(database)/documents/admin_invites/$(inviteId)).data.active == true
+        && get(/databases/$(database)/documents/admin_invites/$(inviteId)).data.email == request.auth.token.email
+        && adminData.email == request.auth.token.email
+        && adminData.role == 'admin'
+        && adminData.active == true
+        && adminData.permissions == get(/databases/$(database)/documents/admin_invites/$(inviteId)).data.permissions;
+    }
+
+    // 4. Collection Rules
+
+    match /test/connection {
+      allow get: if true;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (
+        (isSignedIn() && request.auth.uid == userId)
+        || isOwner()
+        || hasAdminPermission('manage_users')
+      );
+      allow list: if isOwner() || hasAdminPermission('manage_users');
+
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'active'
+        && incoming().clearanceLevel == 'standard'
+        && incoming().emailVerified == request.auth.token.email_verified
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (hasAdminPermission('manage_users') && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'clearanceLevel', 'notes', 'fullName', 'phone', 'updatedAt'])
+          ))
+          ||
+          (request.auth.uid == userId && (
+            (incoming().diff(existing()).affectedKeys().hasOnly(['emailVerified', 'lastLoginAt', 'updatedAt'])
+              && incoming().emailVerified == request.auth.token.email_verified)
+            ||
+            (incoming().diff(existing()).affectedKeys().hasOnly(['lastLoginAt', 'updatedAt'])
+              && incoming().emailVerified == existing().emailVerified)
+          ))
+        );
+
+      allow delete: if isValidId(userId) && (isOwner() || hasAdminPermission('manage_users'));
+    }
+
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (
+        (isSignedIn() && request.auth.uid == adminId)
+        || isOwner()
+        || isActiveAdmin()
+      );
+      allow list: if isOwner() || isActiveAdmin();
+
+      allow create: if isEmailVerified()
+        && isValidId(adminId)
+        && isValidAdminRecord(incoming())
+        && incoming().uid == adminId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner() && (adminId == request.auth.uid || incoming().role == 'admin'))
+          ||
+          (hasAdminPermission('manage_admins') && incoming().role == 'admin')
+          ||
+          (adminId == request.auth.uid && ('inviteId' in incoming()) && canClaimAdminInvite(incoming().inviteId, incoming()))
+        );
+
+      allow update: if isEmailVerified()
+        && isValidId(adminId)
+        && isValidAdminRecord(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().email != 'm36464697@gmail.com'
+        && incoming().role == 'admin'
+        && (isOwner() || hasAdminPermission('manage_admins'))
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'permissions', 'active', 'updatedAt']);
+
+      allow delete: if isEmailVerified()
+        && isValidId(adminId)
+        && existing().email != 'm36464697@gmail.com'
+        && (isOwner() || hasAdminPermission('manage_admins'));
+    }
+
+    match /admin_invites/{inviteId} {
+      allow get: if isEmailVerified() && isValidId(inviteId);
+      allow list: if isOwner() || hasAdminPermission('manage_admins');
+
+      allow create: if isEmailVerified()
+        && isValidId(inviteId)
+        && isValidAdminInvite(incoming())
+        && incoming().id == inviteId
+        && incoming().createdAt == request.time
+        && (isOwner() || hasAdminPermission('manage_admins'));
+
+      allow update: if isEmailVerified()
+        && isValidId(inviteId)
+        && isValidAdminInvite(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && (isOwner() || hasAdminPermission('manage_admins'))
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'permissions', 'active']);
+
+      allow delete: if isEmailVerified()
+        && isValidId(inviteId)
+        && (
+          isOwner()
+          || hasAdminPermission('manage_admins')
+          || existing().email == request.auth.token.email
+        );
+    }
+
+    match /content/{contentId} {
+      allow get: if isValidId(contentId) && (
+        hasAdminPermission('manage_content')
+        || isOwner()
+        || isActiveAdmin()
+        || (isActiveVerifiedUser() && existing().visibility == 'published')
+      );
+      allow list: if isOwner()
+        || isActiveAdmin()
+        || (isActiveVerifiedUser() && resource.data.visibility == 'published');
+
+      allow create: if isEmailVerified()
+        && isValidId(contentId)
+        && isValidVaultContent(incoming())
+        && incoming().id == contentId
+        && incoming().authorId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && hasAdminPermission('manage_content');
+
+      allow update: if isEmailVerified()
+        && isValidId(contentId)
+        && isValidVaultContent(incoming())
+        && incoming().id == existing().id
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && hasAdminPermission('manage_content')
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'type', 'title', 'summary', 'body', 'mediaUrl', 'price',
+          'classification', 'isEncrypted', 'encryptionIv', 'encryptionSalt',
+          'integrityHash', 'visibility', 'updatedAt'
+        ]);
+
+      allow delete: if isEmailVerified()
+        && isValidId(contentId)
+        && hasAdminPermission('manage_content');
+    }
+
+    match /activity_logs/{logId} {
+      allow get: if isValidId(logId) && (isOwner() || hasAdminPermission('view_logs'));
+      allow list: if isOwner() || hasAdminPermission('view_logs');
+
+      allow create: if isEmailVerified()
+        && isValidId(logId)
+        && isValidActivityLog(incoming())
+        && incoming().actorId == request.auth.uid
+        && incoming().createdAt == request.time
+        && (isOwner() || isActiveAdmin());
+
+      allow update, delete: if false;
+    }
+
+    match /security_alerts/{alertId} {
+      allow get: if isValidId(alertId) && (isOwner() || hasAdminPermission('view_alerts'));
+      allow list: if isOwner() || hasAdminPermission('view_alerts');
+
+      allow create: if isSignedIn()
+        && isValidId(alertId)
+        && isValidSecurityAlert(incoming())
+        && incoming().actorId == request.auth.uid
+        && incoming().acknowledged == false
+        && incoming().createdAt == request.time;
+
+      allow update: if isEmailVerified()
+        && isValidId(alertId)
+        && isValidSecurityAlert(incoming())
+        && incoming().createdAt == existing().createdAt
+        && (isOwner() || hasAdminPermission('view_alerts'))
+        && incoming().diff(existing()).affectedKeys().hasOnly(['acknowledged', 'acknowledgedBy', 'acknowledgedAt']);
+
+      allow delete: if isOwner() && isValidId(alertId);
+    }
+
+    match /system_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if isOwner() || isActiveAdmin();
+
+      allow create: if isEmailVerified()
+        && isValidId(settingId)
+        && isValidSystemSettings(incoming())
+        && incoming().updatedAt == request.time
+        && hasAdminPermission('system_settings');
+
+      allow update: if isEmailVerified()
+        && isValidId(settingId)
+        && isValidSystemSettings(incoming())
+        && incoming().updatedAt == request.time
+        && hasAdminPermission('system_settings')
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'siteTitle', 'maintenanceMode', 'registrationOpen',
+          'requireEmailVerification', 'encryptionStandard', 'vaultNotice',
+          'updatedBy', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+  }
+}

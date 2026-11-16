@@ -1,0 +1,505 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered Dark Web member profile with two-word full name, phone, email, verification state, and account status.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 32,
+          "pattern": "^[+0-9\\s\\-()]{6,32}$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "emailVerified": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "suspended", "banned"]
+        },
+        "clearanceLevel": {
+          "type": "string",
+          "enum": ["standard", "elevated", "restricted"]
+        },
+        "securityFingerprint": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "fullName",
+        "phone",
+        "email",
+        "emailVerified",
+        "status",
+        "clearanceLevel",
+        "securityFingerprint",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authorized administrator or site owner with granular RBAC permissions.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "admin"]
+        },
+        "permissions": {
+          "type": "array",
+          "description": "List of RBAC permission strings (max 10)."
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "addedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "addedByEmail": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "fullName",
+        "email",
+        "role",
+        "permissions",
+        "active",
+        "addedBy",
+        "addedByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VaultContent": {
+      "title": "VaultContent",
+      "description": "Owner/Admin published content item (video, image, message, or product) with optional AES-256-GCM encryption.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["video", "image", "message", "product"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "mediaUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "price": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "classification": {
+          "type": "string",
+          "enum": ["standard", "confidential", "encrypted"]
+        },
+        "isEncrypted": {
+          "type": "boolean"
+        },
+        "encryptionIv": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "encryptionSalt": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "integrityHash": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["published", "hidden"]
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "title",
+        "classification",
+        "isEncrypted",
+        "integrityHash",
+        "visibility",
+        "authorId",
+        "authorName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Immutable append-only audit log recording every operation performed by an administrator or site owner.",
+      "type": "object",
+      "properties": {
+        "actorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "actorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "actorEmail": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "actorRole": {
+          "type": "string",
+          "enum": ["owner", "admin"]
+        },
+        "actionType": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["user", "admin", "content", "system", "security"]
+        },
+        "targetId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "details": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 1000
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "critical"]
+        },
+        "checksum": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "actorId",
+        "actorName",
+        "actorEmail",
+        "actorRole",
+        "actionType",
+        "targetType",
+        "details",
+        "severity",
+        "checksum",
+        "createdAt"
+      ]
+    },
+    "SecurityAlert": {
+      "title": "SecurityAlert",
+      "description": "Real-time alert emitted whenever a sensitive action or security anomaly occurs.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "message": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 800
+        },
+        "category": {
+          "type": "string",
+          "enum": ["admin_change", "user_restriction", "content_removal", "policy_update", "auth_event"]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["high", "critical"]
+        },
+        "actorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "actorEmail": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "acknowledgedBy": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "acknowledgedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "title",
+        "message",
+        "category",
+        "severity",
+        "actorId",
+        "actorEmail",
+        "acknowledged",
+        "createdAt"
+      ]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global operational and security policy settings for the Dark Web platform.",
+      "type": "object",
+      "properties": {
+        "siteTitle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "maintenanceMode": {
+          "type": "boolean"
+        },
+        "registrationOpen": {
+          "type": "boolean"
+        },
+        "requireEmailVerification": {
+          "type": "boolean"
+        },
+        "encryptionStandard": {
+          "type": "string",
+          "enum": ["AES-256-GCM"]
+        },
+        "vaultNotice": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "siteTitle",
+        "maintenanceMode",
+        "registrationOpen",
+        "requireEmailVerification",
+        "encryptionStandard",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "AdminInvite": {
+      "title": "AdminInvite",
+      "description": "Pre-authorized admin invitation keyed by email SHA-256 hash for new administrators.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "permissions": {
+          "type": "array",
+          "description": "Pre-assigned RBAC permissions for the invited admin."
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "invitedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "invitedByEmail": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "fullName",
+        "permissions",
+        "active",
+        "invitedBy",
+        "invitedByEmail",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Registered member PII profiles. Strictly readable by profile owner or verified admins/owner."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin and Site Owner RBAC permission records."
+    },
+    "/admin_invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/AdminInvite" },
+      "description": "Pre-authorized admin invitations keyed by email hash."
+    },
+    "/content/{contentId}": {
+      "schema": { "$ref": "#/entities/VaultContent" },
+      "description": "Encrypted and standard content published by Site Owner and authorized Admins."
+    },
+    "/activity_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Immutable append-only audit log for every admin action."
+    },
+    "/security_alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/SecurityAlert" },
+      "description": "Real-time instant security alerts for sensitive system operations."
+    },
+    "/system_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SystemSettings" },
+      "description": "Platform-wide security and access control configuration."
+    }
+  }
+}
