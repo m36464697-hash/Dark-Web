@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   EmailAuthProvider,
   linkWithCredential,
@@ -34,17 +34,18 @@ import {
   Film,
   Image as ImageIcon,
   KeyRound,
+  Link2,
   Lock,
   LogOut,
   Plus,
   Search,
   Server,
   Settings,
-  Shield,
   ShieldAlert,
   ShieldCheck,
   ShoppingBag,
   Trash2,
+  Upload,
   UserCheck,
   UserPlus,
   Users,
@@ -71,6 +72,7 @@ import {
   type UserStatus,
   type VaultContent,
 } from '../types';
+import { BloodBrand } from './BloodBrand';
 
 interface AdminDashboardProps {
   firebaseUser: User;
@@ -82,6 +84,8 @@ interface AdminDashboardProps {
 }
 
 type AdminTab = 'overview' | 'content' | 'users' | 'admins' | 'logs' | 'settings';
+
+const MAX_UPLOAD_BYTES = 60 * 1024 * 1024;
 
 function formatDateTime(ts?: { toDate?: () => Date } | null): string {
   if (!ts || typeof ts.toDate !== 'function') return 'الآن';
@@ -131,6 +135,7 @@ export function AdminDashboard({
     service: string;
     nodeVersion: string;
     uptimeSeconds: number;
+    mediaFileCount?: number;
     encryptionStandard: string;
   } | null>(null);
 
@@ -141,10 +146,15 @@ export function AdminDashboard({
   const [cSummary, setCSummary] = useState('');
   const [cBody, setCBody] = useState('');
   const [cMediaUrl, setCMediaUrl] = useState('');
+  const [cMediaMode, setCMediaMode] = useState<'upload' | 'url'>('upload');
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState('');
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cPrice, setCPrice] = useState('');
   const [cClassification, setCClassification] = useState<ContentClassification>('standard');
   const [cVisibility, setCVisibility] = useState<ContentVisibility>('published');
-  const [cEncrypt, setCEncrypt] = useState(false);
+  const [cEncrypt, setCEncrypt] = useState(Boolean(systemSettings?.forceEncryption));
   const [cPassphrase, setCPassphrase] = useState('');
   const [cSubmitting, setCSubmitting] = useState(false);
 
@@ -171,12 +181,28 @@ export function AdminDashboard({
   const [logSeverityFilter, setLogSeverityFilter] = useState<'all' | ActivityLog['severity']>('all');
   const [logTargetFilter, setLogTargetFilter] = useState<'all' | ActivityLog['targetType']>('all');
 
-  // System Settings Form
+  // Advanced System Settings Form
   const [sSiteTitle, setSSiteTitle] = useState(systemSettings?.siteTitle || 'Dark Web');
   const [sMaintenance, setSMaintenance] = useState(Boolean(systemSettings?.maintenanceMode));
+  const [sEmergencyLockdown, setSEmergencyLockdown] = useState(
+    Boolean(systemSettings?.emergencyLockdown)
+  );
   const [sRegOpen, setSRegOpen] = useState(systemSettings?.registrationOpen ?? true);
   const [sRequireVerify, setSRequireVerify] = useState(
     systemSettings?.requireEmailVerification ?? true
+  );
+  const [sForceEncryption, setSForceEncryption] = useState(
+    Boolean(systemSettings?.forceEncryption)
+  );
+  const [sAllowDownloads, setSAllowDownloads] = useState(systemSettings?.allowDownloads ?? true);
+  const [sWatermarkMedia, setSWatermarkMedia] = useState(
+    Boolean(systemSettings?.watermarkMedia)
+  );
+  const [sSessionTimeoutMinutes, setSSessionTimeoutMinutes] = useState(
+    systemSettings?.sessionTimeoutMinutes ?? 0
+  );
+  const [sMaxFailedLogins, setSMaxFailedLogins] = useState(
+    systemSettings?.maxFailedLogins ?? 5
   );
   const [sNotice, setSNotice] = useState(systemSettings?.vaultNotice || '');
 
@@ -197,20 +223,32 @@ export function AdminDashboard({
     if (systemSettings) {
       setSSiteTitle(systemSettings.siteTitle);
       setSMaintenance(systemSettings.maintenanceMode);
+      setSEmergencyLockdown(Boolean(systemSettings.emergencyLockdown));
       setSRegOpen(systemSettings.registrationOpen);
       setSRequireVerify(systemSettings.requireEmailVerification);
+      setSForceEncryption(Boolean(systemSettings.forceEncryption));
+      setSAllowDownloads(systemSettings.allowDownloads ?? true);
+      setSWatermarkMedia(Boolean(systemSettings.watermarkMedia));
+      setSSessionTimeoutMinutes(systemSettings.sessionTimeoutMinutes ?? 0);
+      setSMaxFailedLogins(systemSettings.maxFailedLogins ?? 5);
       setSNotice(systemSettings.vaultNotice || '');
+      if (systemSettings.forceEncryption) {
+        setCEncrypt(true);
+      }
     }
   }, [systemSettings]);
 
-  // Fetch /api/health
-  useEffect(() => {
+  const refreshHealth = () => {
     fetch('/api/health')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) setServerHealth(data);
       })
       .catch(() => null);
+  };
+
+  useEffect(() => {
+    refreshHealth();
   }, []);
 
   // Subscribe to collections permitted by RBAC
@@ -240,7 +278,6 @@ export function AdminDashboard({
       );
     }
 
-    // Admins list is readable by any active admin/owner
     const qAdmins = query(collection(db, 'admins'), orderBy('createdAt', 'desc'));
     unsubs.push(
       onSnapshot(
@@ -307,7 +344,6 @@ export function AdminDashboard({
     };
   }, [hasAccess, isOwner, adminRecord]);
 
-  // Report unauthorized attempt if non-admin hits /admin
   useEffect(() => {
     if (!hasAccess && firebaseUser.emailVerified) {
       void emitSecurityAlert({
@@ -363,7 +399,6 @@ export function AdminDashboard({
     setTimeout(() => setStatusBanner(null), 5000);
   };
 
-  // Unauthorized Lockout Screen
   if (!hasAccess) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6 relative z-10">
@@ -401,6 +436,90 @@ export function AdminDashboard({
     );
   }
 
+  // Direct device file upload via Express /api/media/upload
+  const handleFileUpload = async (file: File) => {
+    setUploadError('');
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError('حجم الملف يتجاوز الحد الأقصى المسموح به (60 ميجابايت).');
+      return;
+    }
+
+    const mime = file.type.toLowerCase();
+    const isVideo = mime.startsWith('video/');
+    const isImage = mime.startsWith('image/');
+    if (!isVideo && !isImage) {
+      setUploadError('يرجى اختيار ملف فيديو (MP4, WebM, MOV) أو صورة (JPG, PNG, WebP, GIF).');
+      return;
+    }
+
+    if (cType === 'video' && !isVideo) {
+      setUploadError('نوع المحتوى المختار هو "فيديو" — يرجى رفع ملف فيديو.');
+      return;
+    }
+    if (cType === 'image' && !isImage) {
+      setUploadError('نوع المحتوى المختار هو "صورة" — يرجى رفع ملف صورة.');
+      return;
+    }
+
+    try {
+      const idToken = await firebaseUser.getIdToken(true);
+      setUploadProgress(1);
+
+      const responseData = await new Promise<{ mediaUrl: string; filename: string }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/media/upload', true);
+        xhr.setRequestHeader('Authorization', `Bearer ${idToken}`);
+        xhr.setRequestHeader('X-Mime-Type', mime);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable && ev.total > 0) {
+            setUploadProgress(Math.min(99, Math.round((ev.loaded / ev.total) * 100)));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const parsed = JSON.parse(xhr.responseText) as {
+                ok?: boolean;
+                mediaUrl?: string;
+                filename?: string;
+                error?: string;
+              };
+              if (parsed.mediaUrl) {
+                resolve({ mediaUrl: parsed.mediaUrl, filename: parsed.filename || file.name });
+                return;
+              }
+              reject(new Error(parsed.error || 'استجابة غير متوقعة من الخادم.'));
+            } catch {
+              reject(new Error('تعذر قراءة استجابة الخادم بعد الرفع.'));
+            }
+          } else {
+            try {
+              const errJson = JSON.parse(xhr.responseText) as { error?: string };
+              reject(new Error(errJson.error || `فشل الرفع (${xhr.status})`));
+            } catch {
+              reject(new Error(`فشل رفع الملف (رمز ${xhr.status}).`));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('انقطع الاتصال بالخادم أثناء رفع الملف.'));
+        xhr.send(file);
+      });
+
+      setUploadProgress(100);
+      setCMediaUrl(responseData.mediaUrl);
+      setUploadedFileName(file.name);
+      refreshHealth();
+      notify('ok', `تم رفع الملف "${file.name}" بنجاح وأصبح جاهزاً للنشر.`);
+    } catch (err) {
+      setUploadProgress(null);
+      setUploadError((err as Error).message || 'تعذر رفع الملف.');
+    }
+  };
+
   // Content Create / Update
   const resetContentForm = () => {
     setEditingContentId(null);
@@ -409,10 +528,13 @@ export function AdminDashboard({
     setCSummary('');
     setCBody('');
     setCMediaUrl('');
+    setUploadedFileName('');
+    setUploadProgress(null);
+    setUploadError('');
     setCPrice('');
     setCClassification('standard');
     setCVisibility('published');
-    setCEncrypt(false);
+    setCEncrypt(Boolean(systemSettings?.forceEncryption));
     setCPassphrase('');
   };
 
@@ -420,11 +542,16 @@ export function AdminDashboard({
     e.preventDefault();
     if (!hasPermission('manage_content')) return;
     if (!cTitle.trim()) {
-      notify('err', 'يرجى إدخال عنوان المحتوى.');
+      notify('err', 'يرجى إدخال عنوان الملف أو المحتوى.');
       return;
     }
-    if (cEncrypt && cPassphrase.length < 6) {
+    const effectiveEncrypt = Boolean(systemSettings?.forceEncryption) || cEncrypt;
+    if (effectiveEncrypt && cPassphrase.length < 6) {
       notify('err', 'عند تفعيل التشفير يجب إدخال مفتاح تشفير لا يقل عن 6 أحرف.');
+      return;
+    }
+    if (uploadProgress !== null && uploadProgress < 100) {
+      notify('err', 'انتظر حتى يكتمل رفع الملف قبل النشر.');
       return;
     }
 
@@ -437,7 +564,7 @@ export function AdminDashboard({
       let encryptionSalt: string | undefined;
       let integrityHash = await sha256Hex(`${contentId}:${cTitle}:${storedBody}:${storedMediaUrl}`);
 
-      if (cEncrypt) {
+      if (effectiveEncrypt) {
         const bundlePayload = JSON.stringify({
           body: storedBody,
           mediaUrl: storedMediaUrl,
@@ -460,8 +587,8 @@ export function AdminDashboard({
         ...(cType === 'product' && cPrice.trim()
           ? { price: cPrice.trim().slice(0, BLUEPRINT_LIMITS.PRICE_MAX) }
           : {}),
-        classification: cEncrypt ? 'encrypted' : cClassification,
-        isEncrypted: cEncrypt,
+        classification: effectiveEncrypt ? 'encrypted' : cClassification,
+        isEncrypted: effectiveEncrypt,
         ...(encryptionIv ? { encryptionIv } : {}),
         ...(encryptionSalt ? { encryptionSalt } : {}),
         integrityHash,
@@ -520,10 +647,10 @@ export function AdminDashboard({
           actionType: 'PUBLISH_CONTENT',
           targetType: 'content',
           targetId: contentId,
-          details: `نشر محتوى جديد (${cType}${cEncrypt ? ' · مشفر AES-256' : ''}): ${cTitle}`,
-          severity: cEncrypt ? 'warning' : 'info',
+          details: `نشر محتوى جديد (${cType}${effectiveEncrypt ? ' · مشفر AES-256' : ''}): ${cTitle}`,
+          severity: effectiveEncrypt ? 'warning' : 'info',
         });
-        notify('ok', 'تم نشر المحتوى في الخزنة وتسجيل العملية في سجل النشاط.');
+        notify('ok', 'تم نشر الملف في Dark Web وتسجيل العملية في سجل النشاط.');
       }
 
       resetContentForm();
@@ -559,6 +686,14 @@ export function AdminDashboard({
   const handleDeleteContent = async (item: VaultContent) => {
     try {
       await deleteDoc(doc(db, 'content', item.id));
+      if (item.mediaUrl && item.mediaUrl.startsWith('/api/media/')) {
+        const token = await firebaseUser.getIdToken();
+        await fetch(item.mediaUrl, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch(() => null);
+        refreshHealth();
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `content/${item.id}`);
     }
@@ -581,7 +716,7 @@ export function AdminDashboard({
       actorId: firebaseUser.uid,
       actorEmail,
     });
-    notify('ok', 'تم حذف المحتوى وإطلاق تنبيه أمني فوري.');
+    notify('ok', 'تم حذف المحتوى والملفات المرفقة وإطلاق تنبيه أمني فوري.');
   };
 
   // User Actions
@@ -807,7 +942,11 @@ export function AdminDashboard({
     }
   };
 
-  const handleSaveAdminPermissions = async (admin: AdminRecord, nextPerms: AdminPermission[], nextActive: boolean) => {
+  const handleSaveAdminPermissions = async (
+    admin: AdminRecord,
+    nextPerms: AdminPermission[],
+    nextActive: boolean
+  ) => {
     try {
       await updateDoc(doc(db, 'admins', admin.uid), {
         permissions: nextPerms,
@@ -889,12 +1028,21 @@ export function AdminDashboard({
   const handleSaveSystemSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!hasPermission('system_settings')) return;
+    const clampedTimeout = Math.max(0, Math.min(1440, Math.round(Number(sSessionTimeoutMinutes) || 0)));
+    const clampedMaxFails = Math.max(3, Math.min(20, Math.round(Number(sMaxFailedLogins) || 5)));
+
     try {
       await setDoc(doc(db, 'system_settings', 'global'), {
         siteTitle: sSiteTitle.trim().slice(0, 80) || 'Dark Web',
         maintenanceMode: sMaintenance,
+        emergencyLockdown: sEmergencyLockdown,
         registrationOpen: sRegOpen,
         requireEmailVerification: sRequireVerify,
+        forceEncryption: sForceEncryption,
+        allowDownloads: sAllowDownloads,
+        watermarkMedia: sWatermarkMedia,
+        sessionTimeoutMinutes: clampedTimeout,
+        maxFailedLogins: clampedMaxFails,
         encryptionStandard: 'AES-256-GCM',
         vaultNotice: sNotice.trim().slice(0, BLUEPRINT_LIMITS.VAULT_NOTICE_MAX),
         updatedBy: actorEmail,
@@ -911,22 +1059,33 @@ export function AdminDashboard({
       actionType: 'UPDATE_SYSTEM_SETTINGS',
       targetType: 'system',
       targetId: 'global',
-      details: `تعديل إعدادات النظام — صيانة: ${sMaintenance} · فتح التسجيل: ${sRegOpen}`,
+      details: `تحديث السياسات المتقدمة — إغلاق طارئ: ${sEmergencyLockdown} · صيانة: ${sMaintenance} · تشفير إلزامي: ${sForceEncryption} · علامة مائية: ${sWatermarkMedia} · مهلة الجلسة: ${clampedTimeout}د`,
       severity: 'critical',
     });
     await emitSecurityAlert({
-      title: 'تحديث سياسات الأمان والنظام',
-      message: `قام ${actorName} بتعديل الإعدادات العامة (وضع الصيانة: ${sMaintenance ? 'مفعل' : 'متوقف'}).`,
+      title: sEmergencyLockdown ? 'تفعيل الإغلاق الطارئ الشامل' : 'تحديث سياسات الأمان المتقدمة',
+      message: `قام ${actorName} بتعديل إعدادات الأمان (إغلاق طارئ: ${sEmergencyLockdown ? 'نعم' : 'لا'}، منع التنزيل: ${!sAllowDownloads ? 'نعم' : 'لا'}).`,
       category: 'policy_update',
-      severity: 'high',
+      severity: sEmergencyLockdown ? 'critical' : 'high',
       actorId: firebaseUser.uid,
       actorEmail,
     });
-    notify('ok', 'تم حفظ إعدادات الأمان والنظام.');
+    notify('ok', 'تم حفظ إعدادات الأمان المتقدمة وتطبيقها فوراً على المنصة.');
   };
 
   const exportLogsCsv = () => {
-    const header = ['Timestamp', 'ActorName', 'ActorEmail', 'Role', 'Action', 'TargetType', 'TargetId', 'Severity', 'Details', 'Checksum'];
+    const header = [
+      'Timestamp',
+      'ActorName',
+      'ActorEmail',
+      'Role',
+      'Action',
+      'TargetType',
+      'TargetId',
+      'Severity',
+      'Details',
+      'Checksum',
+    ];
     const rows = filteredLogs.map((l) => [
       formatDateTime(l.createdAt),
       l.actorName,
@@ -1016,7 +1175,7 @@ export function AdminDashboard({
       } else if (code === 'auth/requires-recent-login') {
         setPwdError('لأسباب أمنية، سجل الخروج ثم أعد الدخول قبل تغيير كلمة المرور.');
       } else if (code === 'auth/operation-not-allowed') {
-        setPwdError('يرجى تفعيل مزود Email/Password في Firebase Console Authentication Providers أولاً.');
+        setPwdError('يرجى تفعيل مزود Email/Password في إعدادات المصادقة أولاً.');
       } else {
         setPwdError((err as Error)?.message || 'تعذر تحديث كلمة المرور.');
       }
@@ -1025,7 +1184,13 @@ export function AdminDashboard({
     }
   };
 
-  const navItems: { id: AdminTab; label: string; icon: React.ReactNode; visible: boolean; badge?: number }[] = [
+  const navItems: {
+    id: AdminTab;
+    label: string;
+    icon: React.ReactNode;
+    visible: boolean;
+    badge?: number;
+  }[] = [
     {
       id: 'overview',
       label: 'القيادة والتنبيهات',
@@ -1035,7 +1200,7 @@ export function AdminDashboard({
     },
     {
       id: 'content',
-      label: 'إدارة المحتوى المشفر',
+      label: 'رفع ونشر الملفات',
       icon: <Lock className="w-4 h-4" />,
       visible: hasPermission('manage_content'),
     },
@@ -1059,7 +1224,7 @@ export function AdminDashboard({
     },
     {
       id: 'settings',
-      label: 'الأمان و Render',
+      label: 'الأمان والإعدادات المتقدمة',
       icon: <Settings className="w-4 h-4" />,
       visible: hasPermission('system_settings'),
     },
@@ -1072,14 +1237,14 @@ export function AdminDashboard({
         <div className="space-y-6">
           <div className="flex items-center gap-3 pb-4 border-b border-zinc-800/80">
             <img
-              src="/src/assets/images/crypto_seal_emblem_1794858486145.jpg"
+              src="/src/assets/images/hacker_hood_emblem_1794920209158.jpg"
               alt="شعار القيادة"
               referrerPolicy="no-referrer"
-              className="w-10 h-10 rounded-lg object-cover border border-zinc-700"
+              className="w-10 h-10 rounded-lg object-cover border border-red-800/60"
             />
             <div className="min-w-0">
-              <div className="text-sm font-bold text-zinc-100 truncate">Dark Web Admin</div>
-              <div className="text-xs text-emerald-400 truncate">
+              <BloodBrand size="sm" suffix="CMD" />
+              <div className="text-xs text-emerald-400 truncate mt-1">
                 {isOwner ? 'رئيس الموقع' : 'أدمن مفوض'}
               </div>
             </div>
@@ -1147,7 +1312,6 @@ export function AdminDashboard({
 
       {/* Main Workspace */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Top Breadcrumb Bar */}
         <header className="h-16 px-6 border-b border-zinc-800/80 bg-[#060709]/90 backdrop-blur-md flex items-center justify-between gap-4 sticky top-0 z-20">
           <div className="text-xs sm:text-sm text-zinc-400 truncate">
             <span>لوحة تحكم الأدمن</span>
@@ -1158,6 +1322,11 @@ export function AdminDashboard({
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
+            {systemSettings?.emergencyLockdown && (
+              <span className="px-2.5 py-1 rounded bg-red-600/20 border border-red-600/50 text-red-300 text-xs font-bold">
+                إغلاق طارئ نشط
+              </span>
+            )}
             <span className="text-xs text-zinc-400 font-mono-tabular hidden sm:inline">
               AES-256-GCM
             </span>
@@ -1174,7 +1343,6 @@ export function AdminDashboard({
         </header>
 
         <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
-          {/* Instant Live Alert Toast */}
           {toastAlert && (
             <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-start gap-3">
@@ -1246,7 +1414,7 @@ export function AdminDashboard({
                 </div>
 
                 <div className="bg-[#0F1217] border border-zinc-800 rounded-xl p-5 space-y-1">
-                  <div className="text-xs text-zinc-400">عناصر المحتوى بالخزنة</div>
+                  <div className="text-xs text-zinc-400">الملفات والتقارير المنشورة</div>
                   <div className="text-2xl font-bold text-zinc-100 font-mono-tabular">
                     {contentList.length}
                   </div>
@@ -1266,7 +1434,6 @@ export function AdminDashboard({
                 </div>
               </div>
 
-              {/* Real-time Alerts Feed */}
               <div className="bg-[#0F1217] border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between gap-4">
                   <div>
@@ -1274,14 +1441,14 @@ export function AdminDashboard({
                       التنبيهات الأمنية الفورية للإجراءات الحساسة
                     </h2>
                     <p className="text-xs text-zinc-400 mt-0.5">
-                      بث مباشر من قاعدة البيانات لكل عملية تعديل صلاحيات، حظر، حذف، أو محاولة اختراق.
+                      مراقبة مباشرة لكل تعديل صلاحيات، حظر عضو، حذف ملف، أو محاولة دخول غير مصرح بها.
                     </p>
                   </div>
                 </div>
 
                 {!hasPermission('view_alerts') ? (
                   <div className="p-8 text-center text-xs text-zinc-500">
-                    لا تملك صلاحية عرض التنبيهات الأمنية (view_alerts).
+                    لا تملك صلاحية عرض التنبيهات الأمنية.
                   </div>
                 ) : alertsList.length === 0 ? (
                   <div className="p-10 text-center text-sm text-zinc-400">
@@ -1339,7 +1506,7 @@ export function AdminDashboard({
             </div>
           )}
 
-          {/* TAB 2: CONTENT MANAGER */}
+          {/* TAB 2: CONTENT MANAGER WITH DIRECT VIDEO & IMAGE UPLOAD */}
           {activeTab === 'content' && hasPermission('manage_content') && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               <form
@@ -1348,7 +1515,7 @@ export function AdminDashboard({
               >
                 <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
                   <h2 className="text-base font-bold text-zinc-100">
-                    {editingContentId ? 'تعديل محتوى منشور' : 'نشر محتوى جديد في Dark Web'}
+                    {editingContentId ? 'تعديل ملف منشور' : 'رفع ونشر ملف سري في Dark Web'}
                   </h2>
                   {editingContentId && (
                     <button
@@ -1366,13 +1533,16 @@ export function AdminDashboard({
                     <label className="block text-xs text-zinc-400 mb-1">نوع المحتوى</label>
                     <select
                       value={cType}
-                      onChange={(e) => setCType(e.target.value as ContentType)}
+                      onChange={(e) => {
+                        setCType(e.target.value as ContentType);
+                        setUploadError('');
+                      }}
                       className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none"
                     >
-                      <option value="message">رسالة نصية</option>
-                      <option value="video">فيديو</option>
-                      <option value="image">صورة</option>
-                      <option value="product">منتج خاص</option>
+                      <option value="message">ملف سري / رسالة نصية</option>
+                      <option value="video">تسجيل فيديو (رفع مباشر)</option>
+                      <option value="image">صورة / وثيقة (رفع مباشر)</option>
+                      <option value="product">عهدة / منتج خاص</option>
                     </select>
                   </div>
 
@@ -1396,35 +1566,163 @@ export function AdminDashboard({
                     required
                     value={cTitle}
                     onChange={(e) => setCTitle(e.target.value)}
-                    placeholder="عنوان المحتوى..."
+                    placeholder="عنوان الملف أو التسجيل أو القضية..."
                     className="w-full bg-[#090B0E] border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-zinc-400 mb-1">وصف مختصر (اختياري)</label>
+                  <label className="block text-xs text-zinc-400 mb-1">ملخص سريع (اختياري)</label>
                   <input
                     type="text"
                     value={cSummary}
                     onChange={(e) => setCSummary(e.target.value)}
-                    placeholder="ملخص يظهر قبل فتح المحتوى..."
+                    placeholder="وصف مختصر يظهر على بطاقة الملف..."
                     className="w-full bg-[#090B0E] border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none"
                   />
                 </div>
 
                 {(cType === 'video' || cType === 'image' || cType === 'product') && (
-                  <div>
-                    <label className="block text-xs text-zinc-400 mb-1">
-                      رابط الوسائط ({cType === 'video' ? 'MP4 / YouTube' : 'رابط الصورة المباشر'})
-                    </label>
-                    <input
-                      type="url"
-                      dir="ltr"
-                      value={cMediaUrl}
-                      onChange={(e) => setCMediaUrl(e.target.value)}
-                      placeholder="https://..."
-                      className="w-full bg-[#090B0E] border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono-tabular text-left focus:outline-none"
-                    />
+                  <div className="p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-zinc-200">
+                        {cType === 'video'
+                          ? 'ملف الفيديو'
+                          : cType === 'image'
+                            ? 'ملف الصورة'
+                            : 'صورة أو فيديو المنتج'}
+                      </span>
+                      <div className="flex items-center gap-1 bg-[#0F1217] border border-zinc-800 rounded-md p-0.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setCMediaMode('upload')}
+                          className={`px-2 py-1 rounded flex items-center gap-1 cursor-pointer ${
+                            cMediaMode === 'upload'
+                              ? 'bg-emerald-600 text-zinc-950 font-bold'
+                              : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          <Upload className="w-3 h-3" />
+                          رفع من الجهاز
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCMediaMode('url')}
+                          className={`px-2 py-1 rounded flex items-center gap-1 cursor-pointer ${
+                            cMediaMode === 'url'
+                              ? 'bg-zinc-800 text-zinc-100 font-semibold'
+                              : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          <Link2 className="w-3 h-3" />
+                          رابط خارجي
+                        </button>
+                      </div>
+                    </div>
+
+                    {cMediaMode === 'upload' ? (
+                      <div className="space-y-2.5">
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept={
+                            cType === 'video'
+                              ? 'video/mp4,video/webm,video/quicktime,video/ogg'
+                              : cType === 'image'
+                                ? 'image/jpeg,image/png,image/webp,image/gif'
+                                : 'video/*,image/*'
+                          }
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) void handleFileUpload(f);
+                          }}
+                          className="hidden"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={uploadProgress !== null && uploadProgress < 100}
+                          className="w-full py-5 px-4 rounded-lg border border-dashed border-zinc-700 hover:border-emerald-500/70 bg-[#0F1217] text-center space-y-1.5 transition-colors cursor-pointer"
+                        >
+                          <Upload className="w-5 h-5 text-emerald-400 mx-auto" />
+                          <div className="text-xs font-semibold text-zinc-200">
+                            {cType === 'video'
+                              ? 'اضغط لاختيار فيديو من جهازك (MP4, WebM, MOV — حتى 60MB)'
+                              : cType === 'image'
+                                ? 'اضغط لاختيار صورة من جهازك (JPG, PNG, WebP — حتى 60MB)'
+                                : 'اضغط لاختيار صورة أو فيديو للمنتج (حتى 60MB)'}
+                          </div>
+                          {uploadedFileName && (
+                            <div className="text-[11px] text-emerald-400 font-mono-tabular">
+                              تم اختيار: {uploadedFileName}
+                            </div>
+                          )}
+                        </button>
+
+                        {uploadProgress !== null && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono-tabular">
+                              <span>
+                                {uploadProgress < 100 ? 'جاري الرفع إلى الخادم...' : 'اكتمل الرفع'}
+                              </span>
+                              <span>{uploadProgress}%</span>
+                            </div>
+                            <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-500 transition-all duration-200"
+                                style={{ width: `${uploadProgress}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {uploadError && (
+                          <div className="text-xs text-red-400">{uploadError}</div>
+                        )}
+                      </div>
+                    ) : (
+                      <input
+                        type="url"
+                        dir="ltr"
+                        value={cMediaUrl}
+                        onChange={(e) => setCMediaUrl(e.target.value)}
+                        placeholder="https://..."
+                        className="w-full bg-[#0F1217] border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono-tabular text-left focus:outline-none"
+                      />
+                    )}
+
+                    {cMediaUrl && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                          <span className="font-mono-tabular truncate">{cMediaUrl}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCMediaUrl('');
+                              setUploadedFileName('');
+                              setUploadProgress(null);
+                            }}
+                            className="text-red-400 hover:text-red-300 shrink-0 cursor-pointer"
+                          >
+                            إزالة الملف
+                          </button>
+                        </div>
+                        {cType === 'image' || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(cMediaUrl) ? (
+                          <img
+                            src={cMediaUrl}
+                            alt="معاينة الملف المرفوع"
+                            className="w-full max-h-40 object-cover rounded-md border border-zinc-800"
+                          />
+                        ) : (
+                          <video
+                            src={cMediaUrl}
+                            controls
+                            className="w-full max-h-44 rounded-md border border-zinc-800 bg-black"
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1442,12 +1740,12 @@ export function AdminDashboard({
                 )}
 
                 <div>
-                  <label className="block text-xs text-zinc-400 mb-1">نص الرسالة أو تفاصيل المحتوى</label>
+                  <label className="block text-xs text-zinc-400 mb-1">النص السري أو تفاصيل الملف</label>
                   <textarea
                     rows={4}
                     value={cBody}
                     onChange={(e) => setCBody(e.target.value)}
-                    placeholder="اكتب الرسالة أو تفاصيل المنتج أو ملاحظات الفيديو..."
+                    placeholder="اكتب التقرير، تفاصيل القضية، الرسالة، أو وصف التسجيل..."
                     className="w-full bg-[#090B0E] border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none"
                   />
                 </div>
@@ -1460,12 +1758,18 @@ export function AdminDashboard({
                     </span>
                     <input
                       type="checkbox"
-                      checked={cEncrypt}
+                      checked={Boolean(systemSettings?.forceEncryption) || cEncrypt}
+                      disabled={Boolean(systemSettings?.forceEncryption)}
                       onChange={(e) => setCEncrypt(e.target.checked)}
                       className="accent-emerald-500 w-4 h-4"
                     />
                   </label>
-                  {cEncrypt ? (
+                  {systemSettings?.forceEncryption && (
+                    <div className="text-[11px] text-amber-400">
+                      إلزام التشفير مفعل من إعدادات النظام المتقدمة.
+                    </div>
+                  )}
+                  {Boolean(systemSettings?.forceEncryption) || cEncrypt ? (
                     <input
                       type="password"
                       value={cPassphrase}
@@ -1489,7 +1793,7 @@ export function AdminDashboard({
 
                 <button
                   type="submit"
-                  disabled={cSubmitting}
+                  disabled={cSubmitting || (uploadProgress !== null && uploadProgress < 100)}
                   className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-zinc-950 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
@@ -1509,7 +1813,7 @@ export function AdminDashboard({
                 </div>
                 {contentList.length === 0 ? (
                   <div className="p-10 text-center text-sm text-zinc-400">
-                    لم تنشر أي مواد بعد. أضف أول فيديو أو صورة أو رسالة أو منتج من النموذج المجاور.
+                    لم تنشر أي ملفات بعد. ارفع فيديو أو صورة أو انشر ملفاً نصياً من النموذج المجاور.
                   </div>
                 ) : (
                   <div className="divide-y divide-zinc-800/80">
@@ -1520,10 +1824,10 @@ export function AdminDashboard({
                       >
                         <div className="space-y-1 min-w-0">
                           <div className="flex items-center gap-2 text-xs text-zinc-400">
-                            {item.type === 'video' && <Film className="w-3.5 h-3.5 text-emerald-400" />}
+                            {item.type === 'video' && <Film className="w-3.5 h-3.5 text-red-400" />}
                             {item.type === 'image' && <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />}
                             {item.type === 'message' && <FileText className="w-3.5 h-3.5 text-emerald-400" />}
-                            {item.type === 'product' && <ShoppingBag className="w-3.5 h-3.5 text-emerald-400" />}
+                            {item.type === 'product' && <ShoppingBag className="w-3.5 h-3.5 text-amber-400" />}
                             <span>{item.type}</span>
                             <span aria-hidden="true">·</span>
                             <span>{item.visibility === 'published' ? 'منشور' : 'مخفي'}</span>
@@ -1562,10 +1866,13 @@ export function AdminDashboard({
                               setCSummary(item.summary || '');
                               setCBody(item.isEncrypted ? '' : item.body || '');
                               setCMediaUrl(item.mediaUrl || '');
+                              setCMediaMode(item.mediaUrl?.startsWith('/api/media/') ? 'upload' : 'url');
+                              setUploadedFileName('');
+                              setUploadProgress(null);
                               setCPrice(item.price || '');
                               setCClassification(item.classification);
                               setCVisibility(item.visibility);
-                              setCEncrypt(false);
+                              setCEncrypt(Boolean(systemSettings?.forceEncryption));
                             }}
                             className="p-2 rounded-lg bg-[#090B0E] border border-zinc-800 text-zinc-300 hover:border-zinc-700 cursor-pointer"
                             title="تعديل"
@@ -1721,7 +2028,6 @@ export function AdminDashboard({
                 </table>
               </div>
 
-              {/* User Full Data Dossier Modal */}
               {inspectedUser && (
                 <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
                   <div className="max-w-xl w-full bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-5 max-h-[90vh] overflow-y-auto">
@@ -2046,7 +2352,6 @@ export function AdminDashboard({
                 )}
               </div>
 
-              {/* Edit Admin Permissions Modal */}
               {editingAdmin && (
                 <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
                   <div className="max-w-md w-full bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-4">
@@ -2161,6 +2466,7 @@ export function AdminDashboard({
                     <option value="user">المستخدمون</option>
                     <option value="admin">المدراء</option>
                     <option value="system">النظام</option>
+                    <option value="security">الأمان</option>
                   </select>
                 </div>
 
@@ -2232,39 +2538,106 @@ export function AdminDashboard({
             </div>
           )}
 
-          {/* TAB 6: SYSTEM SETTINGS & RENDER STATUS */}
+          {/* TAB 6: ADVANCED SECURITY SETTINGS & RENDER HEALTH */}
           {activeTab === 'settings' && hasPermission('system_settings') && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               <form
                 onSubmit={handleSaveSystemSettings}
-                className="lg:col-span-7 bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-4"
+                className="lg:col-span-7 bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-5"
               >
                 <h2 className="text-base font-bold text-zinc-100 border-b border-zinc-800 pb-3">
-                  سياسات الأمان والتحكم العام بالمنصة
+                  إعدادات الأمان المتقدمة والتحكم الشامل
                 </h2>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1">اسم المنصة الرئيسي</label>
+                    <input
+                      type="text"
+                      value={sSiteTitle}
+                      onChange={(e) => setSSiteTitle(e.target.value)}
+                      className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1">
+                      مهلة انتهاء الجلسة عند الخمول
+                    </label>
+                    <select
+                      value={sSessionTimeoutMinutes}
+                      onChange={(e) => setSSessionTimeoutMinutes(Number(e.target.value))}
+                      className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+                    >
+                      <option value={0}>مفتوحة (بدون إغلاق تلقائي)</option>
+                      <option value={15}>15 دقيقة خمول</option>
+                      <option value={30}>30 دقيقة خمول</option>
+                      <option value={60}>60 دقيقة خمول</option>
+                      <option value={180}>3 ساعات خمول</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-xs text-zinc-400 mb-1">اسم المنصة الرئيسي</label>
+                  <label className="block text-xs text-zinc-400 mb-1">
+                    الحد الأقصى لمحاولات الدخول الفاشلة قبل القفل المؤقت (من 3 إلى 20)
+                  </label>
                   <input
-                    type="text"
-                    value={sSiteTitle}
-                    onChange={(e) => setSSiteTitle(e.target.value)}
-                    className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100"
+                    type="number"
+                    min={3}
+                    max={20}
+                    value={sMaxFailedLogins}
+                    onChange={(e) => setSMaxFailedLogins(Number(e.target.value))}
+                    className="w-full sm:w-48 bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100 font-mono-tabular"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-zinc-400 mb-1">رسالة التنبيه العام في الخزنة</label>
+                  <label className="block text-xs text-zinc-400 mb-1">رسالة التنبيه العام في البوابة</label>
                   <textarea
                     rows={3}
                     value={sNotice}
                     onChange={(e) => setSNotice(e.target.value)}
-                    placeholder="إشعار يظهر للأعضاء الموثقين داخل Dark Web..."
+                    placeholder="إشعار أو تحذير يظهر للأعضاء داخل Dark Web..."
                     className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg p-3 text-xs text-zinc-100"
                   />
                 </div>
 
-                <div className="space-y-3 pt-2">
+                <div className="space-y-2.5 pt-2">
+                  <label className="flex items-center justify-between p-3.5 rounded-lg bg-red-950/20 border border-red-800/40 cursor-pointer">
+                    <div>
+                      <div className="text-xs font-bold text-red-300">
+                        الإغلاق الطارئ الشامل (Emergency Lockdown)
+                      </div>
+                      <div className="text-xs text-zinc-400">
+                        يحجب الدخول عن كافة الأعضاء فوراً مع إبقاء الوصول حصرياً للإدارة العليا.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={sEmergencyLockdown}
+                      onChange={(e) => setSEmergencyLockdown(e.target.checked)}
+                      className="accent-red-600 w-4 h-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-200">
+                        وضع الصيانة والإغلاق المؤقت
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        يمنع تصفح المحتوى لغير المدراء أثناء التحديثات الأمنية.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={sMaintenance}
+                      onChange={(e) => setSMaintenance(e.target.checked)}
+                      className="accent-amber-500 w-4 h-4"
+                    />
+                  </label>
+
                   <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
                     <div>
                       <div className="text-xs font-semibold text-zinc-200">تفعيل التسجيل الجديد</div>
@@ -2283,17 +2656,68 @@ export function AdminDashboard({
                   <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
                     <div>
                       <div className="text-xs font-semibold text-zinc-200">
-                        وضع الصيانة والإغلاق المؤقت
+                        إلزام توثيق البريد الإلكتروني
                       </div>
                       <div className="text-xs text-zinc-500">
-                        يمنع جميع الأعضاء غير الإداريين من تصفح المحتوى مؤقتاً.
+                        منع أي حساب غير مؤكد بالبريد من دخول بوابة Dark Web.
                       </div>
                     </div>
                     <input
                       type="checkbox"
-                      checked={sMaintenance}
-                      onChange={(e) => setSMaintenance(e.target.checked)}
-                      className="accent-red-500 w-4 h-4"
+                      checked={sRequireVerify}
+                      onChange={(e) => setSRequireVerify(e.target.checked)}
+                      className="accent-emerald-500 w-4 h-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-200">
+                        إلزام التشفير الكامل AES-256-GCM عند النشر
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        يفرض تشفير أي ملف أو فيديو أو رسالة قبل حفظها في قاعدة البيانات.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={sForceEncryption}
+                      onChange={(e) => setSForceEncryption(e.target.checked)}
+                      className="accent-emerald-500 w-4 h-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-200">
+                        السماح بتنزيل الوسائط (الفيديو والصور)
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        عند التعطيل، يتم إخفاء زر التنزيل وتعطيل قائمة الحفظ على الصور والفيديو.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={sAllowDownloads}
+                      onChange={(e) => setSAllowDownloads(e.target.checked)}
+                      className="accent-emerald-500 w-4 h-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#090B0E] border border-zinc-800 cursor-pointer">
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-200">
+                        العلامة المائية بهوية المشاهد (Watermark)
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        طباعة البريد والبصمة الرقمية للعضو فوق الصور والفيديوهات لمنع التسريب.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={sWatermarkMedia}
+                      onChange={(e) => setSWatermarkMedia(e.target.checked)}
+                      className="accent-emerald-500 w-4 h-4"
                     />
                   </label>
                 </div>
@@ -2303,21 +2727,27 @@ export function AdminDashboard({
                   className="px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-zinc-950 text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
                 >
                   <Check className="w-4 h-4" />
-                  حفظ سياسات الأمان
+                  حفظ وتطبيق إعدادات الأمان المتقدمة
                 </button>
               </form>
 
               <div className="lg:col-span-5 bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-4">
                 <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
                   <Server className="w-4 h-4 text-emerald-400" />
-                  <h2 className="text-base font-bold text-zinc-100">جاهزية النشر على Render</h2>
+                  <h2 className="text-base font-bold text-zinc-100">حالة الخادم والبنية التحتية</h2>
                 </div>
 
                 <div className="space-y-2.5 text-xs">
                   <div className="p-3 rounded-lg bg-[#090B0E] border border-zinc-800 flex items-center justify-between">
                     <span className="text-zinc-400">حالة الخادم الحي</span>
                     <span className="text-emerald-400 font-mono-tabular">
-                      {serverHealth?.status || 'active'}
+                      {serverHealth?.status || 'operational'}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#090B0E] border border-zinc-800 flex items-center justify-between">
+                    <span className="text-zinc-400">ملفات الوسائط المرفوعة على الخادم</span>
+                    <span className="text-zinc-100 font-mono-tabular">
+                      {serverHealth?.mediaFileCount ?? 0} ملف
                     </span>
                   </div>
                   <div className="p-3 rounded-lg bg-[#090B0E] border border-zinc-800 flex items-center justify-between">
@@ -2331,7 +2761,7 @@ export function AdminDashboard({
                     <span className="text-zinc-200 font-mono-tabular">AES-256-GCM</span>
                   </div>
                   <div className="p-3 rounded-lg bg-[#090B0E] border border-zinc-800 flex items-center justify-between">
-                    <span className="text-zinc-400">قاعدة البيانات السريعة</span>
+                    <span className="text-zinc-400">قاعدة البيانات</span>
                     <span className="text-emerald-400 font-mono-tabular">Cloud Firestore</span>
                   </div>
                 </div>
@@ -2339,7 +2769,7 @@ export function AdminDashboard({
                 <div className="p-4 rounded-lg bg-[#090B0E] border border-zinc-800 text-xs text-zinc-400 leading-relaxed space-y-2">
                   <div className="font-bold text-zinc-200 flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    مخطط render.yaml المزدوج جاهز:
+                    مخطط النشر المزدوج على Render:
                   </div>
                   <p>
                     تم إعداد خدمتين مستقلتين في ملف <span className="font-mono-tabular text-zinc-200">render.yaml</span>:

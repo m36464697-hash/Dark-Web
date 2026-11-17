@@ -367,7 +367,7 @@
     },
     "SystemSettings": {
       "title": "SystemSettings",
-      "description": "Global operational and security policy settings for the Dark Web platform.",
+      "description": "Global operational and advanced security policy settings for the Dark Web platform.",
       "type": "object",
       "properties": {
         "siteTitle": {
@@ -378,11 +378,29 @@
         "maintenanceMode": {
           "type": "boolean"
         },
+        "emergencyLockdown": {
+          "type": "boolean"
+        },
         "registrationOpen": {
           "type": "boolean"
         },
         "requireEmailVerification": {
           "type": "boolean"
+        },
+        "forceEncryption": {
+          "type": "boolean"
+        },
+        "allowDownloads": {
+          "type": "boolean"
+        },
+        "watermarkMedia": {
+          "type": "boolean"
+        },
+        "sessionTimeoutMinutes": {
+          "type": "number"
+        },
+        "maxFailedLogins": {
+          "type": "number"
         },
         "encryptionStandard": {
           "type": "string",

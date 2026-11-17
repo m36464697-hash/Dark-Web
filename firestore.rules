@@ -214,13 +214,21 @@ service cloud.firestore {
           'requireEmailVerification', 'encryptionStandard', 'updatedBy', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'siteTitle', 'maintenanceMode', 'registrationOpen',
-          'requireEmailVerification', 'encryptionStandard', 'vaultNotice', 'updatedBy', 'updatedAt'
+          'siteTitle', 'maintenanceMode', 'emergencyLockdown', 'registrationOpen',
+          'requireEmailVerification', 'forceEncryption', 'allowDownloads', 'watermarkMedia',
+          'sessionTimeoutMinutes', 'maxFailedLogins', 'encryptionStandard', 'vaultNotice',
+          'updatedBy', 'updatedAt'
         ])
         && data.siteTitle is string && data.siteTitle.size() >= 2 && data.siteTitle.size() <= 80
         && data.maintenanceMode is bool
+        && (!('emergencyLockdown' in data) || data.emergencyLockdown is bool)
         && data.registrationOpen is bool
         && data.requireEmailVerification is bool
+        && (!('forceEncryption' in data) || data.forceEncryption is bool)
+        && (!('allowDownloads' in data) || data.allowDownloads is bool)
+        && (!('watermarkMedia' in data) || data.watermarkMedia is bool)
+        && (!('sessionTimeoutMinutes' in data) || (data.sessionTimeoutMinutes is number && data.sessionTimeoutMinutes >= 0 && data.sessionTimeoutMinutes <= 1440))
+        && (!('maxFailedLogins' in data) || (data.maxFailedLogins is number && data.maxFailedLogins >= 3 && data.maxFailedLogins <= 20))
         && data.encryptionStandard == 'AES-256-GCM'
         && (!('vaultNotice' in data) || (data.vaultNotice is string && data.vaultNotice.size() <= 500))
         && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 160
@@ -443,8 +451,9 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && hasAdminPermission('system_settings')
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'siteTitle', 'maintenanceMode', 'registrationOpen',
-          'requireEmailVerification', 'encryptionStandard', 'vaultNotice',
+          'siteTitle', 'maintenanceMode', 'emergencyLockdown', 'registrationOpen',
+          'requireEmailVerification', 'forceEncryption', 'allowDownloads', 'watermarkMedia',
+          'sessionTimeoutMinutes', 'maxFailedLogins', 'encryptionStandard', 'vaultNotice',
           'updatedBy', 'updatedAt'
         ]);
 

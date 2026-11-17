@@ -174,8 +174,14 @@ export interface SecurityAlert {
 export interface SystemSettings {
   siteTitle: string;
   maintenanceMode: boolean;
+  emergencyLockdown?: boolean;
   registrationOpen: boolean;
   requireEmailVerification: boolean;
+  forceEncryption?: boolean;
+  allowDownloads?: boolean;
+  watermarkMedia?: boolean;
+  sessionTimeoutMinutes?: number;
+  maxFailedLogins?: number;
   encryptionStandard: 'AES-256-GCM';
   vaultNotice?: string;
   updatedBy: string;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import {
   deleteDoc,
   doc,
@@ -29,6 +29,7 @@ const IS_STANDALONE_ADMIN = import.meta.env.VITE_SITE_ROLE === 'admin';
 function AppShell() {
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authSyncTick, setAuthSyncTick] = useState(0);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [adminRecord, setAdminRecord] = useState<AdminRecord | null>(null);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
@@ -36,7 +37,6 @@ function AppShell() {
     IS_STANDALONE_ADMIN || window.location.pathname.startsWith('/admin') ? 'admin' : 'portal'
   );
 
-  // Sync browser back/forward navigation
   useEffect(() => {
     const onPop = () => {
       setRoute(
@@ -56,7 +56,6 @@ function AppShell() {
     setRoute(target);
   };
 
-  // Global system settings listener
   useEffect(() => {
     const ref = doc(db, 'system_settings', 'global');
     const unsub = onSnapshot(
@@ -67,13 +66,12 @@ function AppShell() {
         }
       },
       () => {
-        // Fallback defaults if global settings document has not been initialized yet
+        // Default settings until initialized by owner/admin
       }
     );
     return () => unsub();
   }, []);
 
-  // Auth state listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
@@ -86,12 +84,34 @@ function AppShell() {
     return () => unsub();
   }, []);
 
+  // Idle session auto-logout governed by systemSettings.sessionTimeoutMinutes
+  useEffect(() => {
+    const timeoutMins = systemSettings?.sessionTimeoutMinutes ?? 0;
+    if (!firebaseUser || timeoutMins <= 0) return;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        void signOut(auth);
+      }, timeoutMins * 60_000);
+    };
+
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'] as const;
+    events.forEach((ev) => window.addEventListener(ev, resetTimer, { passive: true }));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timer);
+      events.forEach((ev) => window.removeEventListener(ev, resetTimer));
+    };
+  }, [firebaseUser, systemSettings?.sessionTimeoutMinutes]);
+
   const isOwner = Boolean(
     firebaseUser?.emailVerified &&
       firebaseUser.email?.toLowerCase() === SITE_OWNER_EMAIL.toLowerCase()
   );
 
-  // Hydrate User Profile, Bootstrap Owner, or Claim Admin Invite
   useEffect(() => {
     if (!authReady || !firebaseUser) return;
 
@@ -126,7 +146,6 @@ function AppShell() {
       if (!firebaseUser.emailVerified || !firebaseUser.email) return;
       const emailLower = firebaseUser.email.toLowerCase();
 
-      // Bootstrap Site Owner records if missing
       if (emailLower === SITE_OWNER_EMAIL.toLowerCase()) {
         const ownerAdminSnap = await getDoc(adminRef);
         if (!ownerAdminSnap.exists()) {
@@ -172,7 +191,6 @@ function AppShell() {
         return;
       }
 
-      // Check for pre-authorized admin invite
       const inviteId = await deriveInviteId(emailLower);
       const inviteRef = doc(db, 'admin_invites', inviteId);
       try {
@@ -201,7 +219,7 @@ function AppShell() {
           }
         }
       } catch {
-        // Ignore if no invite exists or already consumed
+        // No pending admin invite
       }
     };
 
@@ -211,11 +229,11 @@ function AppShell() {
       unsubUser();
       unsubAdmin();
     };
-  }, [authReady, firebaseUser]);
+  }, [authReady, firebaseUser, authSyncTick]);
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#060709] text-zinc-300 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-[#050608] text-zinc-300 flex items-center justify-center p-6">
         <div className="text-sm font-mono-tabular">جاري تهيئة طبقة التشفير والمصادقة...</div>
       </div>
     );
@@ -228,16 +246,18 @@ function AppShell() {
   );
 
   return (
-    <div className="min-h-screen bg-[#060709] text-zinc-100 relative">
+    <div className="min-h-screen bg-[#050608] text-zinc-100 relative">
       <CipherBackdrop />
       {!isAuthenticatedAndVerified || !firebaseUser ? (
         <AuthGate
           firebaseUser={firebaseUser}
           userProfile={userProfile}
           registrationOpen={systemSettings?.registrationOpen ?? true}
+          maxFailedLogins={systemSettings?.maxFailedLogins ?? 5}
           isAdminMode={route === 'admin'}
           onVerifiedComplete={() => {
-            // Reactive state updates via onAuthStateChanged & snapshot listeners
+            setFirebaseUser(auth.currentUser);
+            setAuthSyncTick((t) => t + 1);
           }}
         />
       ) : route === 'admin' ? (
