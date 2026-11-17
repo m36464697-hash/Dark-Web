@@ -97,8 +97,15 @@ async function startServer(): Promise<void> {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Dark Web:${SITE_ROLE}] Server listening on 0.0.0.0:${PORT} (${IS_PROD ? 'production' : 'development'})`);
+  app.listen(3000, '0.0.0.0', () => {
+    console.log(`[Dark Web:${SITE_ROLE}] Server listening on 0.0.0.0:3000 (${IS_PROD ? 'production' : 'development'})`);
+  }).on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error('Port 3000 is already in use. Retrying or shutting down...');
+      process.exit(1);
+    } else {
+      throw err;
+    }
   });
 }
 
