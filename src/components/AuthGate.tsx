@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-react';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../lib/firebase';
 import { generateSecurityFingerprint, generateValidDocId } from '../lib/crypto';
-import { BLUEPRINT_LIMITS, type UserProfile } from '../types';
+import { BLUEPRINT_LIMITS, SITE_OWNER_EMAIL, type UserProfile } from '../types';
 
 interface AuthGateProps {
   firebaseUser: User | null;
@@ -45,7 +46,7 @@ export function AuthGate({
   const [mode, setMode] = useState<'register' | 'login'>(isAdminMode ? 'login' : 'register');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(isAdminMode ? SITE_OWNER_EMAIL : '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
@@ -172,6 +173,52 @@ export function AuthGate({
       }
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
+      if (
+        (code === 'auth/user-not-found' || code === 'auth/invalid-credential') &&
+        trimmedEmail === SITE_OWNER_EMAIL.toLowerCase()
+      ) {
+        try {
+          const checkRes = await fetch('/api/admin/verify-bootstrap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: trimmedEmail, password }),
+          });
+          const checkData = (await checkRes.json()) as { authorized?: boolean };
+          if (checkData.authorized) {
+            const created = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+            await updateProfile(created.user, { displayName: 'رئيس الموقع' });
+            const fp = await generateSecurityFingerprint(created.user.uid, trimmedEmail);
+            await setDoc(doc(db, 'users', created.user.uid), {
+              uid: created.user.uid,
+              fullName: 'رئيس الموقع',
+              phone: 'موثق إدارياً',
+              email: trimmedEmail,
+              emailVerified: created.user.emailVerified,
+              status: 'active',
+              clearanceLevel: 'elevated',
+              securityFingerprint: fp,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              lastLoginAt: serverTimestamp(),
+            });
+            await sendEmailVerification(created.user);
+            setInfoMsg('تم تهيئة حساب رئيس الموقع وإرسال رابط التحقق إلى بريدك الإلكتروني.');
+            return;
+          }
+        } catch (bootstrapErr: unknown) {
+          const bCode = (bootstrapErr as { code?: string })?.code || '';
+          if (bCode === 'auth/email-already-in-use') {
+            setErrorMsg('كلمة المرور غير صحيحة أو تم تغييرها مسبقاً، أو أن الحساب مرتبط بدخول Google (يمكنك الدخول عبر Google ثم ربط/تغيير كلمة المرور من لوحة التحكم).');
+            return;
+          }
+          if (bCode === 'auth/operation-not-allowed') {
+            setShowConsoleHelp(true);
+            setErrorMsg('تسجيل الدخول بالبريد وكلمة المرور يتطلب تفعيل مزود Email/Password في Firebase Console.');
+            return;
+          }
+        }
+      }
+
       if (code === 'auth/operation-not-allowed') {
         setShowConsoleHelp(true);
         setErrorMsg('تسجيل الدخول بالبريد وكلمة المرور يتطلب تفعيل مزود Email/Password في Firebase Console.');
@@ -180,6 +227,25 @@ export function AuthGate({
       } else {
         setErrorMsg((err as Error)?.message || 'تعذر تسجيل الدخول.');
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setErrorMsg('');
+    setInfoMsg('');
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setErrorMsg('أدخل بريدك الإلكتروني أولاً لإرسال رابط إعادة تعيين كلمة المرور.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, trimmedEmail);
+      setInfoMsg('تم إرسال رابط تغيير / إعادة تعيين كلمة المرور إلى بريدك الإلكتروني.');
+    } catch (err: unknown) {
+      setErrorMsg((err as Error)?.message || 'تعذر إرسال رابط إعادة التعيين.');
     } finally {
       setLoading(false);
     }
@@ -599,6 +665,19 @@ export function AuthGate({
                 </button>
               </div>
             </div>
+
+            {(mode === 'login' || isAdminMode) && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={handleResetPassword}
+                  className="text-xs text-zinc-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                >
+                  نسيت كلمة المرور أو تريد إعادة تعيينها؟
+                </button>
+              </div>
+            )}
 
             <button
               type="submit"

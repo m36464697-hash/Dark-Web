@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { signOut, type User } from 'firebase/auth';
+import {
+  EmailAuthProvider,
+  linkWithCredential,
+  reauthenticateWithCredential,
+  signOut,
+  updatePassword,
+  type User,
+} from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -172,6 +179,19 @@ export function AdminDashboard({
     systemSettings?.requireEmailVerification ?? true
   );
   const [sNotice, setSNotice] = useState(systemSettings?.vaultNotice || '');
+
+  // Password Change / Link Modal
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [currentPwd, setCurrentPwd] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [confirmPwd, setConfirmPwd] = useState('');
+  const [pwdSaving, setPwdSaving] = useState(false);
+  const [pwdError, setPwdError] = useState('');
+
+  const hasPasswordProvider = useMemo(
+    () => firebaseUser.providerData.some((p) => p.providerId === 'password'),
+    [firebaseUser]
+  );
 
   useEffect(() => {
     if (systemSettings) {
@@ -929,6 +949,82 @@ export function AdminDashboard({
     URL.revokeObjectURL(url);
   };
 
+  const handleChangeOwnPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwdError('');
+
+    if (newPwd.length < 8) {
+      setPwdError('كلمة المرور الجديدة يجب أن تتكون من 8 خانات على الأقل.');
+      return;
+    }
+    if (newPwd !== confirmPwd) {
+      setPwdError('تأكيد كلمة المرور غير متطابق.');
+      return;
+    }
+    if (hasPasswordProvider && !currentPwd) {
+      setPwdError('يرجى إدخال كلمة المرور الحالية.');
+      return;
+    }
+    if (!firebaseUser.email) {
+      setPwdError('لا يوجد بريد إلكتروني مرتبط بالحساب.');
+      return;
+    }
+
+    setPwdSaving(true);
+    try {
+      if (hasPasswordProvider) {
+        const cred = EmailAuthProvider.credential(firebaseUser.email, currentPwd);
+        await reauthenticateWithCredential(firebaseUser, cred);
+        await updatePassword(firebaseUser, newPwd);
+      } else {
+        const cred = EmailAuthProvider.credential(firebaseUser.email, newPwd);
+        await linkWithCredential(firebaseUser, cred);
+      }
+
+      await recordAdminAction({
+        actorId: firebaseUser.uid,
+        actorName,
+        actorEmail,
+        actorRole,
+        actionType: hasPasswordProvider ? 'CHANGE_ADMIN_PASSWORD' : 'LINK_ADMIN_PASSWORD',
+        targetType: 'security',
+        targetId: firebaseUser.uid,
+        details: hasPasswordProvider
+          ? `تغيير كلمة مرور الحساب الإداري ${actorEmail}`
+          : `ربط كلمة مرور بالبريد الإلكتروني للحساب الإداري ${actorEmail}`,
+        severity: 'critical',
+      });
+
+      await emitSecurityAlert({
+        title: 'تحديث كلمة مرور حساب إداري',
+        message: `قام ${actorName} (${actorEmail}) بتحديث كلمة مرور دخوله إلى لوحة التحكم.`,
+        category: 'auth_event',
+        severity: 'high',
+        actorId: firebaseUser.uid,
+        actorEmail,
+      });
+
+      setShowPasswordModal(false);
+      setCurrentPwd('');
+      setNewPwd('');
+      setConfirmPwd('');
+      notify('ok', 'تم تحديث كلمة المرور وتوثيق العملية أمنياً بنجاح.');
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+        setPwdError('كلمة المرور الحالية غير صحيحة.');
+      } else if (code === 'auth/requires-recent-login') {
+        setPwdError('لأسباب أمنية، سجل الخروج ثم أعد الدخول قبل تغيير كلمة المرور.');
+      } else if (code === 'auth/operation-not-allowed') {
+        setPwdError('يرجى تفعيل مزود Email/Password في Firebase Console Authentication Providers أولاً.');
+      } else {
+        setPwdError((err as Error)?.message || 'تعذر تحديث كلمة المرور.');
+      }
+    } finally {
+      setPwdSaving(false);
+    }
+  };
+
   const navItems: { id: AdminTab; label: string; icon: React.ReactNode; visible: boolean; badge?: number }[] = [
     {
       id: 'overview',
@@ -1017,6 +1113,17 @@ export function AdminDashboard({
 
         <div className="pt-4 border-t border-zinc-800/80 space-y-2.5">
           <div className="text-xs text-zinc-500 font-mono-tabular truncate">{actorEmail}</div>
+          <button
+            type="button"
+            onClick={() => {
+              setPwdError('');
+              setShowPasswordModal(true);
+            }}
+            className="w-full py-2 px-3 rounded-lg bg-[#0F1217] border border-zinc-800 hover:border-emerald-500/40 text-zinc-200 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+            تغيير كلمة المرور
+          </button>
           {!isStandaloneAdminSite && onNavigatePortal && (
             <button
               type="button"
@@ -2248,6 +2355,99 @@ export function AdminDashboard({
           )}
         </main>
       </div>
+
+      {/* Admin Change / Link Password Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleChangeOwnPassword}
+            className="max-w-md w-full bg-[#0F1217] border border-zinc-800 rounded-xl p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-base font-bold text-zinc-100">
+                  {hasPasswordProvider ? 'تغيير كلمة المرور' : 'تعيين كلمة مرور للدخول بالبريد'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPasswordModal(false)}
+                className="text-zinc-400 hover:text-zinc-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              الحساب: <span className="font-mono-tabular text-zinc-200">{actorEmail}</span>
+            </p>
+
+            {pwdError && (
+              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
+                {pwdError}
+              </div>
+            )}
+
+            {hasPasswordProvider && (
+              <div>
+                <label className="block text-xs text-zinc-400 mb-1">كلمة المرور الحالية</label>
+                <input
+                  type="password"
+                  required
+                  dir="ltr"
+                  value={currentPwd}
+                  onChange={(e) => setCurrentPwd(e.target.value)}
+                  className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono-tabular text-left"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1">كلمة المرور الجديدة (8 خانات على الأقل)</label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                dir="ltr"
+                value={newPwd}
+                onChange={(e) => setNewPwd(e.target.value)}
+                className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono-tabular text-left"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1">تأكيد كلمة المرور الجديدة</label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                dir="ltr"
+                value={confirmPwd}
+                onChange={(e) => setConfirmPwd(e.target.value)}
+                className="w-full bg-[#090B0E] border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono-tabular text-left"
+              />
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="submit"
+                disabled={pwdSaving}
+                className="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-zinc-950 text-xs font-bold cursor-pointer"
+              >
+                {pwdSaving ? 'جاري التحديث...' : 'حفظ كلمة المرور الجديدة'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPasswordModal(false)}
+                className="px-4 py-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

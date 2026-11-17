@@ -1,4 +1,5 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,10 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
 const SITE_ROLE = process.env.VITE_SITE_ROLE === 'admin' ? 'admin' : 'portal';
+const OWNER_EMAIL = 'm36464697@gmail.com';
+const OWNER_BOOTSTRAP_DIGEST =
+  process.env.ADMIN_BOOTSTRAP_HASH ||
+  'a670f3364dded0f4e44a4f3be2e3bfabc87c8dcf68cf0de1d940da68c39bdcbd';
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -55,6 +60,31 @@ async function startServer(): Promise<void> {
   app.use(securityHeaders);
   app.use(express.json({ limit: '1mb' }));
 
+  app.post('/api/admin/verify-bootstrap', rateLimitApi, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const body = req.body as { email?: unknown; password?: unknown };
+    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const password = typeof body?.password === 'string' ? body.password : '';
+
+    if (email !== OWNER_EMAIL || !password) {
+      res.status(403).json({ authorized: false });
+      return;
+    }
+
+    const incomingDigest = crypto.createHash('sha256').update(password).digest();
+    const expectedDigest = Buffer.from(OWNER_BOOTSTRAP_DIGEST, 'hex');
+
+    if (
+      incomingDigest.length === expectedDigest.length &&
+      crypto.timingSafeEqual(incomingDigest, expectedDigest)
+    ) {
+      res.json({ authorized: true });
+      return;
+    }
+
+    res.status(403).json({ authorized: false });
+  });
+
   app.get('/api/health', rateLimitApi, (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -97,11 +127,11 @@ async function startServer(): Promise<void> {
     });
   }
 
-  app.listen(3000, '0.0.0.0', () => {
-    console.log(`[Dark Web:${SITE_ROLE}] Server listening on 0.0.0.0:3000 (${IS_PROD ? 'production' : 'development'})`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Dark Web:${SITE_ROLE}] Server listening on 0.0.0.0:${PORT} (${IS_PROD ? 'production' : 'development'})`);
   }).on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error('Port 3000 is already in use. Retrying or shutting down...');
+      console.error(`Port ${PORT} is already in use. Retrying or shutting down...`);
       process.exit(1);
     } else {
       throw err;
